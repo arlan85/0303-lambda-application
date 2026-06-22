@@ -449,6 +449,15 @@ The `data.json` file contains an array of university/college objects. Each objec
 - Ensure you have permissions to update Lambda functions
 - Verify the function name matches the expected pattern for environment detection
 
+### Fix: add GitHub OIDC provider to AWS
+AWS Console (manual) 
+  1. Go to IAM → Identity providers → Add provider
+  2. Provider type: OpenID Connect
+  3. Provider URL: https://token.actions.githubusercontent.com
+  4. Click Get thumbprint
+  5. Audience: sts.amazonaws.com
+  6. Click Add provider
+
 ### OIDC Authentication Issues
 
 - Verify GitHub repository secrets are configured correctly
