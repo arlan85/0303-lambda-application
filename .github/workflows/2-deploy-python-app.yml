@@ -1,0 +1,143 @@
+name: 2-Deployment
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+
+# Required for OIDC
+permissions:
+  id-token: write
+  contents: read
+  checks: write
+
+jobs:
+  # ------------------------------------------------------------
+  # Integration: reuse your existing integration workflow
+  # ------------------------------------------------------------
+  Integrate:
+    name: Integrate
+    uses: ./.github/workflows/1-integrate-python-app.yml
+
+  # ------------------------------------------------------------
+  # Delivery: build lambda.zip and publish as an artifact
+  # ------------------------------------------------------------
+  Package:
+    needs: Integrate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.1
+
+      - name: Set up Python environment
+        uses: actions/setup-python@v6.1.0
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install the project requirements
+        run: make requirements
+
+      # Build the code and create a lambda.zip artifact
+      - name: Create the lambda.zip artifact
+        run: make build
+
+      - name: Archive lambda.zip artifact
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: lambda-artifact
+          path: ./lambda.zip
+          retention-days: 7
+
+  # ------------------------------------------------------------
+  # Deploy to Staging: continuous deployment on each push
+  # ------------------------------------------------------------
+  Staging:
+    name: Deploy to Staging
+    environment:
+      name: Staging
+      url: ${{ vars.URL }}
+    needs: Integrate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.1
+
+      - name: Set up Python environment
+        uses: actions/setup-python@v6.1.0
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install the project requirements
+        run: make requirements
+
+      # Use a role for OIDC authentication vs access keys
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Retrieve lambda.zip
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: lambda-artifact
+
+      - name: Deploy
+        run: |
+          make deploy \
+            PLATFORM="GitHub Actions" \
+            FUNCTION="${{ vars.FUNCTION_NAME }}" \
+            VERSION="${GITHUB_SHA}" \
+            BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+
+      - name: Test deployment
+        run: |
+          make testdeployment URL=${{ vars.URL }} VERSION=${GITHUB_SHA}
+
+  # ------------------------------------------------------------
+  # Deploy to Production: gated by manual approval (environment reviewers)
+  # ------------------------------------------------------------
+  Production:
+    name: Deploy to Production (Approval Required)
+    needs: Staging
+    environment:
+      name: Production
+      url: ${{ vars.URL }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.1
+
+      - name: Set up Python environment with caching enabled for pip dependencies
+        uses: actions/setup-python@v6.1.0
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install the project requirements
+        run: make requirements
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Retrieve lambda.zip
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: lambda-artifact
+
+      - name: Deploy
+        run: |
+          make deploy \
+            PLATFORM="GitHub Actions" \
+            FUNCTION="${{ vars.FUNCTION_NAME }}" \
+            VERSION="${GITHUB_SHA}" \
+            BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+
+      - name: Test deployment
+        run: |
+          make testdeployment URL=${{ vars.URL }} VERSION=${GITHUB_SHA}
